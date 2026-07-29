@@ -1,0 +1,23 @@
+{
+  "skill_name": "prompt-first-mashina-course",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "load the mashina data and just tell me the most interesting thing in it",
+      "expected_output": "The assistant asks for an audience, decision, and initial belief before settling on a finding; it fetches through course-data and exposes evidence rather than a finished conclusion.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "make me a few good charts and write the business recommendation for my dashboard. i don't know python",
+      "expected_output": "The assistant keeps code hidden, asks for a question or hypothesis, proposes a small evidence plan, and pauses for the student's interpretation before writing a recommendation.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "fit the best model you can to predict car prices and give me the answer",
+      "expected_output": "The assistant defines target usefulness with the student, compares a median baseline with a basic regression, reports validation and segment errors, checks leakage, and asks the student to judge whether the model is useful.",
+      "files": []
+    }
+  ]
+}

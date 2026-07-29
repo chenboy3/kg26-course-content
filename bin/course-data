@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+CONTENT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MANIFEST = CONTENT_ROOT / "datasets" / "datasets.json"
+DEFAULT_WORKSPACE = Path("/workspace")
+
+
+class DatasetError(Exception):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_datasets(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise DatasetError(f"Cannot read dataset manifest {path}: {error}") from error
+
+    if payload.get("schema_version") != 1:
+        raise DatasetError("Dataset manifest schema_version must be 1")
+
+    datasets = payload.get("datasets")
+    if not isinstance(datasets, dict):
+        raise DatasetError("Dataset manifest must contain a datasets object")
+    return datasets
+
+
+def workspace_path(workspace: Path, relative_path: str) -> Path:
+    root = workspace.resolve()
+    destination = (root / relative_path).resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError as error:
+        raise DatasetError(f"Output path escapes the workspace: {relative_path}") from error
+    return destination
+
+
+def prepare_csv(
+    source: Path,
+    destination: Path,
+    remove_columns: list[str],
+) -> tuple[int, list[str]]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with source.open(encoding="utf-8-sig", newline="") as input_handle:
+        reader = csv.DictReader(input_handle)
+        if reader.fieldnames is None:
+            raise DatasetError("Downloaded CSV has no header")
+
+        missing_columns = sorted(set(remove_columns) - set(reader.fieldnames))
+        if missing_columns:
+            raise DatasetError(
+                "Downloaded CSV is missing expected columns: "
+                + ", ".join(missing_columns)
+            )
+
+        output_columns = [
+            column for column in reader.fieldnames if column not in remove_columns
+        ]
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+        )
+        row_count = 0
+        try:
+            with os.fdopen(
+                file_descriptor,
+                "w",
+                encoding="utf-8",
+                newline="",
+            ) as output_handle:
+                writer = csv.DictWriter(output_handle, fieldnames=output_columns)
+                writer.writeheader()
+                for row in reader:
+                    writer.writerow(
+                        {column: row.get(column, "") for column in output_columns}
+                    )
+                    row_count += 1
+            os.replace(temporary_name, destination)
+        except Exception:
+            Path(temporary_name).unlink(missing_ok=True)
+            raise
+
+    return row_count, output_columns
+
+
+def write_metadata(destination: Path, payload: dict[str, object]) -> None:
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        os.replace(temporary_name, destination)
+    except Exception:
+        Path(temporary_name).unlink(missing_ok=True)
+        raise
+
+
+def fetch_dataset(
+    name: str,
+    config: dict[str, object],
+    workspace: Path,
+    accept_terms: bool,
+    force: bool,
+) -> None:
+    if not accept_terms:
+        raise DatasetError(
+            "Review the source license notice, then rerun with --accept-terms"
+        )
+
+    source_config = config.get("source")
+    if not isinstance(source_config, dict):
+        raise DatasetError(f"Dataset {name} has no source configuration")
+    if source_config.get("type") != "kaggle":
+        raise DatasetError(f"Dataset {name} uses an unsupported source type")
+
+    output = config.get("output")
+    if not isinstance(output, str):
+        raise DatasetError(f"Dataset {name} has no output path")
+    destination = workspace_path(workspace, output)
+    metadata_path = destination.parent / "manifest.json"
+
+    if destination.is_file() and metadata_path.is_file() and not force:
+        print(f"{name} is already available at {destination}")
+        return
+
+    dataset_spec = source_config.get("dataset_spec")
+    source_file = source_config.get("file")
+    expected_sha256 = source_config.get("sha256")
+    if not all(
+        isinstance(value, str)
+        for value in (dataset_spec, source_file, expected_sha256)
+    ):
+        raise DatasetError(f"Dataset {name} has incomplete Kaggle source metadata")
+
+    with tempfile.TemporaryDirectory(prefix=f"course-{name}-") as temp_dir:
+        try:
+            subprocess.run(
+                [
+                    "kaggle",
+                    "datasets",
+                    "download",
+                    dataset_spec,
+                    "--file",
+                    source_file,
+                    "--path",
+                    temp_dir,
+                    "--force",
+                    "--quiet",
+                ],
+                check=True,
+            )
+        except FileNotFoundError as error:
+            raise DatasetError("The Kaggle CLI is not installed") from error
+        except subprocess.CalledProcessError as error:
+            raise DatasetError(
+                f"Kaggle download failed with exit {error.returncode}"
+            ) from error
+
+        downloaded = Path(temp_dir) / source_file
+        if not downloaded.is_file():
+            raise DatasetError(f"Kaggle did not return {source_file}")
+
+        actual_sha256 = sha256_file(downloaded)
+        if actual_sha256 != expected_sha256:
+            raise DatasetError(
+                f"Checksum mismatch for {source_file}: expected "
+                f"{expected_sha256}, got {actual_sha256}"
+            )
+
+        raw_remove_columns = config.get("remove_columns", [])
+        if not isinstance(raw_remove_columns, list) or not all(
+            isinstance(column, str) for column in raw_remove_columns
+        ):
+            raise DatasetError(f"Dataset {name} has invalid remove_columns")
+        remove_columns = list(raw_remove_columns)
+        row_count, output_columns = prepare_csv(
+            downloaded,
+            destination,
+            remove_columns,
+        )
+
+    metadata: dict[str, object] = {
+        "dataset": name,
+        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+        "source": source_config,
+        "source_sha256": actual_sha256,
+        "output_sha256": sha256_file(destination),
+        "row_count": row_count,
+        "columns": output_columns,
+        "removed_columns": remove_columns,
+    }
+    write_metadata(metadata_path, metadata)
+    print(f"Prepared {row_count} rows at {destination}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="course-data")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(os.environ.get("COURSE_DATA_MANIFEST", DEFAULT_MANIFEST)),
+    )
+    parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path(os.environ.get("COURSE_WORKSPACE", DEFAULT_WORKSPACE)),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("list")
+
+    fetch_parser = subparsers.add_parser("fetch")
+    fetch_parser.add_argument("dataset")
+    fetch_parser.add_argument("--accept-terms", action="store_true")
+    fetch_parser.add_argument("--force", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        datasets = load_datasets(args.manifest)
+        if args.command == "list":
+            for name, config in sorted(datasets.items()):
+                print(f"{name}\t{config.get('title', '')}\t{config.get('output', '')}")
+            return 0
+
+        config = datasets.get(args.dataset)
+        if config is None:
+            raise DatasetError(f"Unknown dataset: {args.dataset}")
+        fetch_dataset(
+            args.dataset,
+            config,
+            args.workspace,
+            args.accept_terms,
+            args.force,
+        )
+        return 0
+    except DatasetError as error:
+        print(f"course-data: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

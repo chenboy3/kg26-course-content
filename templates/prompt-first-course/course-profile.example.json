@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "course_id": "prompt-first-mashina-template",
+  "content_version": "0.1.0",
+  "install": {
+    "python_requirements": "requirements.txt",
+    "commands": [
+      {
+        "name": "course-data",
+        "path": "bin/course-data"
+      }
+    ],
+    "skills": [
+      {
+        "name": "lab-1-fetch-and-frame",
+        "path": "templates/prompt-first-course/.opencode/skills/lab-1-fetch-and-frame"
+      },
+      {
+        "name": "lab-2-analyze-and-explain",
+        "path": "templates/prompt-first-course/.opencode/skills/lab-2-analyze-and-explain"
+      },
+      {
+        "name": "lab-3-fit-and-question-model",
+        "path": "templates/prompt-first-course/.opencode/skills/lab-3-fit-and-question-model"
+      }
+    ],
+    "dataset_manifest": "datasets/datasets.json",
+    "lessons": [
+      {
+        "day": 1,
+        "path": "templates/prompt-first-course/labs/1-fetch-and-frame"
+      },
+      {
+        "day": 2,
+        "path": "templates/prompt-first-course/labs/2-analyze-and-explain"
+      },
+      {
+        "day": 3,
+        "path": "templates/prompt-first-course/labs/3-fit-and-question-model"
+      }
+    ]
+  }
+}

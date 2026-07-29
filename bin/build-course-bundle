@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+
+import argparse
+import gzip
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
+
+
+CONTENT_ROOT = Path(__file__).resolve().parents[1]
+ARCHIVE_ROOT = "course-content"
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$")
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class BundleError(Exception):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_git(repo: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.strip() or error.stdout.strip()
+        raise BundleError(f"git {' '.join(args)} failed: {message}") from error
+    return result.stdout.strip()
+
+
+def resolve_commit(repo: Path, ref: str) -> str:
+    commit = run_git(
+        repo,
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{ref}^{{commit}}",
+    )
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise BundleError(f"{ref} did not resolve to a Git commit")
+    return commit
+
+
+def relative_path(value: object, field: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value:
+        raise BundleError(f"{field} must be a non-empty relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise BundleError(f"{field} must stay inside the course bundle")
+    return path
+
+
+def asset_path(root: Path, value: object, field: str) -> Path:
+    relative = relative_path(value, field)
+    path = root.joinpath(*relative.parts)
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as error:
+        raise BundleError(f"{field} escapes the course bundle") from error
+    return path
+
+
+def validate_named_assets(
+    root: Path,
+    raw_assets: object,
+    field: str,
+    *,
+    directory: bool,
+) -> None:
+    if not isinstance(raw_assets, list):
+        raise BundleError(f"install.{field} must be a list")
+
+    names: set[str] = set()
+    for index, raw_asset in enumerate(raw_assets):
+        if not isinstance(raw_asset, dict):
+            raise BundleError(f"install.{field}[{index}] must be an object")
+        name = raw_asset.get("name")
+        if not isinstance(name, str) or not ID_RE.fullmatch(name):
+            raise BundleError(f"install.{field}[{index}].name is invalid")
+        if name in names:
+            raise BundleError(f"install.{field} contains duplicate name {name}")
+
+        path = asset_path(
+            root,
+            raw_asset.get("path"),
+            f"install.{field}[{index}].path",
+        )
+        if directory and not path.is_dir():
+            raise BundleError(f"install.{field}[{index}].path is not a directory")
+        if not directory and not path.is_file():
+            raise BundleError(f"install.{field}[{index}].path is not a file")
+        if field == "skills" and not (path / "SKILL.md").is_file():
+            raise BundleError(f"skill {name} has no SKILL.md")
+        names.add(name)
+
+
+def validate_profile(root: Path, profile_path: str) -> dict[str, object]:
+    profile_file = asset_path(root, profile_path, "profile path")
+    if not profile_file.is_file():
+        raise BundleError(f"course profile not found at {profile_path}")
+
+    try:
+        profile = json.loads(profile_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BundleError(f"cannot read course profile: {error}") from error
+    if not isinstance(profile, dict):
+        raise BundleError("course profile must contain a JSON object")
+    if profile.get("schema_version") != 1:
+        raise BundleError("course profile schema_version must be 1")
+
+    course_id = profile.get("course_id")
+    if not isinstance(course_id, str) or not ID_RE.fullmatch(course_id):
+        raise BundleError("course_id is invalid")
+    content_version = profile.get("content_version")
+    if not isinstance(content_version, str) or not VERSION_RE.fullmatch(
+        content_version
+    ):
+        raise BundleError("content_version is invalid")
+
+    install = profile.get("install")
+    if not isinstance(install, dict):
+        raise BundleError("course profile must contain an install object")
+
+    requirements = asset_path(
+        root,
+        install.get("python_requirements"),
+        "install.python_requirements",
+    )
+    if not requirements.is_file():
+        raise BundleError("install.python_requirements is not a file")
+
+    dataset_manifest = asset_path(
+        root,
+        install.get("dataset_manifest"),
+        "install.dataset_manifest",
+    )
+    if not dataset_manifest.is_file():
+        raise BundleError("install.dataset_manifest is not a file")
+
+    validate_named_assets(root, install.get("commands"), "commands", directory=False)
+    validate_named_assets(root, install.get("skills"), "skills", directory=True)
+
+    lessons = install.get("lessons")
+    if not isinstance(lessons, list):
+        raise BundleError("install.lessons must be a list")
+    for index, lesson in enumerate(lessons):
+        if not isinstance(lesson, dict):
+            raise BundleError(f"install.lessons[{index}] must be an object")
+        path = asset_path(
+            root,
+            lesson.get("path"),
+            f"install.lessons[{index}].path",
+        )
+        if not path.is_dir():
+            raise BundleError(f"install.lessons[{index}].path is not a directory")
+
+    return {
+        "course_id": course_id,
+        "content_version": content_version,
+    }
+
+
+def create_archive(repo: Path, commit: str, destination: Path) -> None:
+    try:
+        with destination.open("wb") as output:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "archive",
+                    "--format=tar",
+                    f"--prefix={ARCHIVE_ROOT}/",
+                    commit,
+                ],
+                check=True,
+                stderr=subprocess.PIPE,
+                stdout=output,
+            )
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.decode().strip()
+        raise BundleError(f"git archive failed: {message}") from error
+
+
+def extract_archive(archive_path: Path, destination: Path) -> Path:
+    try:
+        with tarfile.open(archive_path, "r:") as archive:
+            members = archive.getmembers()
+            for member in members:
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise BundleError(f"unsafe archive path: {member.name}")
+                if not (member.isfile() or member.isdir()):
+                    raise BundleError(
+                        f"archive links and special files are not allowed: {member.name}"
+                    )
+            archive.extractall(destination, members=members, filter="data")
+    except (OSError, tarfile.TarError) as error:
+        raise BundleError(f"cannot inspect course archive: {error}") from error
+
+    root = destination / ARCHIVE_ROOT
+    if not root.is_dir():
+        raise BundleError(f"archive does not contain {ARCHIVE_ROOT}/")
+    return root
+
+
+def compress_archive(source: Path, destination: Path) -> None:
+    with source.open("rb") as input_handle, destination.open("wb") as output_handle:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            compresslevel=9,
+            fileobj=output_handle,
+            mtime=0,
+        ) as compressed:
+            shutil.copyfileobj(input_handle, compressed)
+
+
+def bundle_url(base_url: str, filename: str) -> str:
+    parsed = urlparse(base_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise BundleError(
+            "bundle base URL must be HTTPS without credentials, query, or fragment"
+        )
+    return f"{base_url.rstrip('/')}/{filename}"
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def build_bundle(
+    repo: Path,
+    ref: str,
+    output_dir: Path,
+    profile_path: str,
+    base_url: str | None,
+) -> dict[str, object]:
+    repo = repo.resolve()
+    commit = resolve_commit(repo, ref)
+    relative_path(profile_path, "profile path")
+    if base_url is not None:
+        bundle_url(base_url, "placeholder.tar.gz")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".course-bundle-", dir=output_dir) as temp:
+        temp_root = Path(temp)
+        archive_path = temp_root / "course-content.tar"
+        extracted = temp_root / "extracted"
+        extracted.mkdir()
+
+        create_archive(repo, commit, archive_path)
+        content_root = extract_archive(archive_path, extracted)
+        profile = validate_profile(content_root, profile_path)
+
+        course_id = str(profile["course_id"])
+        content_version = str(profile["content_version"])
+        artifact_stem = f"{course_id}-{content_version}-{commit[:12]}"
+        bundle_name = f"{artifact_stem}.tar.gz"
+        temporary_bundle = temp_root / bundle_name
+        compress_archive(archive_path, temporary_bundle)
+        bundle_sha256 = sha256_file(temporary_bundle)
+
+        temporary_checksum = temp_root / f"{bundle_name}.sha256"
+        temporary_checksum.write_text(
+            f"{bundle_sha256}  {bundle_name}\n",
+            encoding="utf-8",
+        )
+        temporary_manifest = temp_root / f"{artifact_stem}.manifest.json"
+        manifest: dict[str, object] = {
+            "bundle_file": bundle_name,
+            "bundle_sha256": bundle_sha256,
+            "content_version": content_version,
+            "course_id": course_id,
+            "profile_path": profile_path,
+            "source_commit": commit,
+        }
+        write_json(temporary_manifest, manifest)
+
+        outputs = [
+            temporary_bundle,
+            temporary_checksum,
+            temporary_manifest,
+        ]
+        catalog_name = f"{artifact_stem}.catalog.json"
+        if base_url is not None:
+            temporary_catalog = temp_root / catalog_name
+            write_json(
+                temporary_catalog,
+                {
+                    course_id: {
+                        "bundle_sha256": bundle_sha256,
+                        "bundle_url": bundle_url(base_url, bundle_name),
+                        "profile_path": profile_path,
+                    }
+                },
+            )
+            outputs.append(temporary_catalog)
+
+        for source in outputs:
+            os.replace(source, output_dir / source.name)
+
+    return {
+        **manifest,
+        "bundle_path": str(output_dir / bundle_name),
+        "checksum_path": str(output_dir / f"{bundle_name}.sha256"),
+        "manifest_path": str(output_dir / f"{artifact_stem}.manifest.json"),
+        "catalog_path": (
+            str(output_dir / catalog_name) if base_url is not None else None
+        ),
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build a deterministic Inklab course bundle from a Git commit."
+    )
+    parser.add_argument("--ref", default="HEAD", help="Git commit or ref to archive")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("dist"),
+        help="Directory for the bundle and release metadata",
+    )
+    parser.add_argument(
+        "--profile",
+        default="course-profile.json",
+        help="Course profile path inside the repository",
+    )
+    parser.add_argument(
+        "--base-url",
+        help="Durable HTTPS directory URL used to write a gateway catalog entry",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        result = build_bundle(
+            repo=CONTENT_ROOT,
+            ref=args.ref,
+            output_dir=args.output_dir,
+            profile_path=args.profile,
+            base_url=args.base_url,
+        )
+    except (BundleError, OSError) as error:
+        print(f"course bundle error: {error}", file=sys.stderr)
+        return 1
+
+    print(f"source_commit={result['source_commit']}")
+    print(f"bundle={result['bundle_path']}")
+    print(f"sha256={result['bundle_sha256']}")
+    print(f"checksum={result['checksum_path']}")
+    print(f"manifest={result['manifest_path']}")
+    if result["catalog_path"] is not None:
+        print(f"catalog={result['catalog_path']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

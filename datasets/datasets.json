@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "datasets": {
+    "mashina": {
+      "title": "Mashina Kyrgyzstan vehicle listings",
+      "source": {
+        "type": "kaggle",
+        "dataset_spec": "vinnyg110g/mashina-kyrgyzstan-dataset/1",
+        "version": 1,
+        "file": "mashina_raw.csv",
+        "sha256": "b91b085d146f9efb8f7cb0724656950a57d3f3694f3eacd10e0110d64416f2be",
+        "url": "https://www.kaggle.com/datasets/vinnyg110g/mashina-kyrgyzstan-dataset/versions/1",
+        "license": "Other (specified in description)",
+        "license_note": "Course organizers report course-use permission. Link the written permission before redistributing a hosted snapshot."
+      },
+      "output": "data/mashina/mashina.csv",
+      "remove_columns": [
+        "License plate",
+        "VIN"
+      ]
+    }
+  }
+}

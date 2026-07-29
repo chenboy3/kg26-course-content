@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "course_id": "kg26",
+  "content_version": "2026.1",
+  "install": {
+    "python_requirements": "requirements.txt",
+    "commands": [
+      {
+        "name": "course-data",
+        "path": "bin/course-data"
+      }
+    ],
+    "skills": [
+      {
+        "name": "day-1-fetch-data",
+        "path": ".opencode/skills/day-1-fetch-data"
+      }
+    ],
+    "dataset_manifest": "datasets/datasets.json",
+    "lessons": [
+      {
+        "day": 1,
+        "path": "lessons/day-1"
+      }
+    ]
+  }
+}

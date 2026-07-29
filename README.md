@@ -22,6 +22,39 @@ installer should:
 
 The repository does not contain a raw copy of the Mashina dataset.
 
+## Build an Inklab course bundle
+
+Build from a resolved commit so the artifact never includes uncommitted files:
+
+```bash
+git fetch origin main
+bin/build-course-bundle \
+  --ref "$(git rev-parse origin/main)" \
+  --output-dir dist
+```
+
+The command validates `course-profile.json` and every referenced requirement,
+command, skill, dataset manifest, and lesson before writing:
+
+- a deterministic `.tar.gz` course bundle;
+- a `.sha256` checksum file;
+- a release manifest with the source commit and profile version.
+
+After the bundle has a durable student-readable location, pass its HTTPS
+directory URL to produce the gateway catalog entry:
+
+```bash
+bin/build-course-bundle \
+  --ref "$(git rev-parse origin/main)" \
+  --output-dir dist \
+  --base-url https://content.example/courses
+```
+
+The resulting `.catalog.json` file is the value for Inklab's
+`COURSE_PROFILES_JSON`. Upload the matching bundle without renaming it, then
+configure the gateway with that catalog and the desired
+`DEFAULT_COURSE_PROFILE`.
+
 ## Mashina dataset
 
 The Day 1 lab uses version 1 of

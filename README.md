@@ -3,12 +3,42 @@
 Shared lecture material, labs, dataset manifests, and OpenCode skills for the
 KG26 AI and data science bootcamp.
 
-This repository is separate from:
+## Start here
 
-- `chenboy3/kg26-project`, which owns the competition simulation, project
-  releases, submissions, and evaluation;
-- `jonathanzhang99/inklab`, which owns generic OpenCode provisioning and the
-  course-profile installer.
+Use this repository if you are writing or testing student-visible lessons. It
+does not contain competition answers, private scoring logic, platform secrets,
+or a raw copy of the Mashina dataset.
+
+| Repository | Owns |
+|---|---|
+| [`chenboy3/kg26-project`](https://github.com/chenboy3/kg26-project) | Cafe simulation data, project releases, submissions, and private evaluation |
+| This repository | Shared lessons, OpenCode skills, dataset manifests, course profiles, and versioned bundles |
+| [`jonathanzhang99/inklab`](https://github.com/jonathanzhang99/inklab) | Hosted OpenCode accounts, worker machines, and course-profile installation |
+
+The current `kg26` profile installs the Day 1 lesson, the
+`/day-1-fetch-data` skill, and the `course-data` command. The three-lab
+prompt-first template is an author example; it is not yet installed by the
+live `kg26` profile.
+
+### First local check
+
+Requires Git and Python 3.12+. No Kaggle account or platform credentials are
+needed for these checks:
+
+```bash
+git clone https://github.com/chenboy3/kg26-course-content.git
+cd kg26-course-content
+
+python3 -m unittest discover -s tests -v
+bin/course-data list
+bin/build-course-bundle \
+  --ref HEAD \
+  --output-dir /tmp/kg26-course-bundle-test
+```
+
+Success means the tests finish with `OK`, `course-data list` shows `mashina`,
+and the bundle builder writes a `.tar.gz`, checksum, and manifest under
+`/tmp/kg26-course-bundle-test`.
 
 ## Repository contract
 
@@ -68,6 +98,24 @@ permission and confirm that it covers redistribution to student instances
 before serving a centrally hosted snapshot. Until then, use the pinned Kaggle
 download path and do not commit or bake the raw CSV into an image.
 
+To exercise the real download, install the pinned CLI and authenticate it:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+source .venv/bin/activate
+kaggle auth login
+
+bin/course-data \
+  --workspace ./workspace \
+  fetch mashina \
+  --accept-terms
+```
+
+The fetch command removes `License plate` and `VIN`, writes the cleaned CSV
+under `workspace/data/mashina/`, and records source and output checksums. Keep
+`workspace/` out of commits.
+
 ## Prompt-first template course
 
 [`templates/prompt-first-course`](templates/prompt-first-course) is a small
@@ -87,25 +135,36 @@ dataset, expected artifacts, and decision context.
 
 ## Local verification
 
-Create a virtual environment, install the pinned dependency, and run the tests:
+The unit tests do not download data or require secrets:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests
+python3 -m unittest discover -s tests -v
 ```
 
-List the available datasets:
+After changing `course-profile.json`, a skill, lesson, command, requirement, or
+dataset manifest, commit the candidate changes to a branch. The builder archives
+the requested Git ref and intentionally ignores uncommitted files. Build that
+commit twice and confirm the hashes match:
 
 ```bash
-bin/course-data list
+bin/build-course-bundle --ref HEAD --output-dir /tmp/kg26-bundle-a
+bin/build-course-bundle --ref HEAD --output-dir /tmp/kg26-bundle-b
+shasum -a 256 /tmp/kg26-bundle-a/*.tar.gz /tmp/kg26-bundle-b/*.tar.gz
 ```
 
-Fetch Mashina into a test workspace after reviewing the source terms:
+## Current status
 
-```bash
-bin/course-data \
-  --workspace ./workspace \
-  fetch mashina \
-  --accept-terms
-```
+- [PR #1](https://github.com/chenboy3/kg26-course-content/pull/1) added the
+  prompt-first Mashina lesson, fetch skill, dataset manifest, and reusable
+  author template.
+- [PR #2](https://github.com/chenboy3/kg26-course-content/pull/2) added the
+  deterministic bundle builder and profile validation.
+- The public
+  [`course-bundle-d68f4ea`](https://github.com/chenboy3/kg26-course-content/releases/tag/course-bundle-d68f4ea)
+  release contains `kg26` content version `2026.1` from merge commit
+  `d68f4ea`.
+
+Before a student rehearsal, add the remaining daily lessons and skills, attach
+the written Mashina redistribution permission, and publish a new immutable
+bundle when the profile changes. Never replace an existing release artifact in
+place.

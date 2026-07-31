@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Store the student's course-service URL and team token without echoing it."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+class ConfigureError(Exception):
+    pass
+
+
+def service_url(value: str) -> str:
+    parsed = urlparse(value)
+    local_http = parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "localhost",
+    }
+    if (
+        not value
+        or (parsed.scheme != "https" and not local_http)
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigureError(
+            "course URL must be HTTPS without credentials, query, or fragment"
+        )
+    return value.rstrip("/")
+
+
+def write_config(workspace: Path, url: str, token: str, force: bool) -> Path:
+    if len(token) < 24:
+        raise ConfigureError("team token must contain at least 24 characters")
+    config_dir = workspace / ".kg26"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.chmod(0o700)
+    path = config_dir / "config.json"
+    if path.exists() and not force:
+        raise ConfigureError(
+            f"{path} already exists; use --force to replace its credentials"
+        )
+    temporary = config_dir / ".config.json.tmp"
+    temporary.write_text(
+        json.dumps(
+            {"course_url": service_url(url), "team_token": token},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+    path.chmod(0o600)
+    return path
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="kg26-configure",
+        description="Save the KG26 course URL and team token in this workspace",
+    )
+    parser.add_argument("course_url", nargs="?")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args(argv)
+    url = args.course_url or input("KG26 course URL: ").strip()
+    token = getpass.getpass("KG26 team token: ").strip()
+    try:
+        path = write_config(args.workspace, url, token, args.force)
+    except (ConfigureError, OSError) as error:
+        print(f"kg26-configure: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+    print(f"Saved course credentials to {path}")
+    print("The token was not printed. Do not commit or share this file.")
+
+
+if __name__ == "__main__":
+    main()

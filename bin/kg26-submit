@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Submit one team artifact to the standalone KG26 course service."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+
+SUBMISSION_ID_PATTERN = re.compile(r"^sub_[0-9a-f]{24}$")
+
+
+class SubmitError(Exception):
+    pass
+
+
+def service_url(value: str) -> str:
+    parsed = urlparse(value)
+    local_http = parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "localhost",
+    }
+    if (
+        not value
+        or (parsed.scheme != "https" and not local_http)
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise SubmitError(
+            "KG26_COURSE_URL must be HTTPS without credentials, query, or fragment"
+        )
+    return value.rstrip("/")
+
+
+def load_artifact(path: Path) -> tuple[dict, bytes]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise SubmitError(f"submission file not found: {path}") from error
+    except json.JSONDecodeError as error:
+        raise SubmitError(f"submission file is invalid JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise SubmitError("submission file must contain a JSON object")
+    canonical = (
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    return payload, canonical
+
+
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    request = Request(url, method=method, data=body, headers=headers or {})
+    try:
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read())
+    except HTTPError as error:
+        try:
+            detail = json.loads(error.read())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            detail = {"error": f"HTTP {error.code}"}
+        finally:
+            error.close()
+        message = detail.get("message") or detail.get("error") or f"HTTP {error.code}"
+        raise SubmitError(f"course service rejected the request: {message}") from error
+    except (URLError, TimeoutError) as error:
+        raise SubmitError(f"cannot reach the course service: {error}") from error
+    except json.JSONDecodeError as error:
+        raise SubmitError("course service returned invalid JSON") from error
+    if not isinstance(payload, dict):
+        raise SubmitError("course service returned an invalid response")
+    return payload
+
+
+def idempotency_key(health: dict, artifact: bytes) -> str:
+    identity = json.dumps(
+        {
+            "run_id": health.get("run_id"),
+            "release_version": health.get("release_version"),
+            "open_day": health.get("open_day"),
+            "artifact_sha256": hashlib.sha256(artifact).hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "kg26-" + hashlib.sha256(identity).hexdigest()[:40]
+
+
+def save_receipt(workspace: Path, receipt: dict) -> Path:
+    submission_id = receipt.get("submission_id")
+    if not isinstance(submission_id, str) or not SUBMISSION_ID_PATTERN.fullmatch(
+        submission_id
+    ):
+        raise SubmitError("course service returned an invalid submission ID")
+    receipt_dir = workspace / ".kg26" / "receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    path = receipt_dir / f"{submission_id}.json"
+    content = json.dumps(
+        receipt,
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+    ) + "\n"
+    if path.exists() and path.read_text(encoding="utf-8") != content:
+        raise SubmitError(f"refusing to replace a different receipt: {path}")
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def load_credentials(
+    workspace: Path,
+    server_override: str | None,
+) -> tuple[str, str]:
+    config = {}
+    config_path = workspace / ".kg26" / "config.json"
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise SubmitError(f"{config_path} is invalid JSON") from error
+        if not isinstance(config, dict):
+            raise SubmitError(f"{config_path} must contain a JSON object")
+    server = (
+        server_override
+        or os.environ.get("KG26_COURSE_URL")
+        or config.get("course_url")
+    )
+    token = os.environ.get("KG26_TEAM_TOKEN") or config.get("team_token")
+    if not isinstance(server, str) or not server:
+        raise SubmitError(
+            "run bin/kg26-configure or set KG26_COURSE_URL before submitting"
+        )
+    if not isinstance(token, str) or not token:
+        raise SubmitError(
+            "run bin/kg26-configure or set KG26_TEAM_TOKEN before submitting"
+        )
+    return service_url(server), token
+
+
+def submit(
+    artifact_path: Path,
+    base_url: str,
+    token: str,
+    workspace: Path,
+) -> tuple[dict, Path]:
+    artifact, canonical = load_artifact(artifact_path)
+    health = request_json(f"{base_url}/healthz")
+    if artifact.get("day") != health.get("open_day"):
+        raise SubmitError(
+            f"artifact is for Day {artifact.get('day')}; "
+            f"the server is accepting Day {health.get('open_day')}"
+        )
+    key = idempotency_key(health, canonical)
+    receipt = request_json(
+        f"{base_url}/api/v1/submissions",
+        method="POST",
+        body=canonical,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Idempotency-Key": key,
+        },
+    )
+    return receipt, save_receipt(workspace, receipt)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="kg26-submit",
+        description="Submit one Cafe Sim JSON artifact and save its receipt",
+    )
+    parser.add_argument("artifact", type=Path)
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("KG26_COURSE_URL"),
+        help="course service base URL; defaults to KG26_COURSE_URL",
+    )
+    parser.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="workspace where .kg26/receipts will be stored",
+    )
+    args = parser.parse_args(argv)
+    try:
+        base_url, token = load_credentials(args.workspace, args.server)
+        receipt, receipt_path = submit(
+            args.artifact,
+            base_url,
+            token,
+            args.workspace,
+        )
+    except (OSError, SubmitError) as error:
+        print(f"kg26-submit: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+    print(json.dumps(receipt, indent=2, sort_keys=True, ensure_ascii=False))
+    print(f"receipt_path={receipt_path}")
+
+
+if __name__ == "__main__":
+    main()

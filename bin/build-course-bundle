@@ -342,7 +342,7 @@ def build_bundle(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build a deterministic Inklab course bundle from a Git commit."
+        description="Build a deterministic course bundle from a Git commit."
     )
     parser.add_argument("--ref", default="HEAD", help="Git commit or ref to archive")
     parser.add_argument(

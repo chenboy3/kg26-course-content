@@ -15,14 +15,14 @@ or begin the Day 1 dashboard exercise.
 
 ## Fetch
 
-1. Run `course-data list` to show the available course datasets.
-2. Explain that the installer downloads the pinned Mashina version from Kaggle,
+1. Run `bin/course-data list` to show the available course datasets.
+2. Explain that the command downloads the pinned Mashina version from Kaggle,
    verifies its checksum, and removes `License plate` and `VIN`.
 3. Ask the student to confirm before downloading from the source.
 4. After confirmation, run:
 
    ```bash
-   course-data fetch mashina --accept-terms
+   bin/course-data fetch mashina --accept-terms
    ```
 
 5. Read `data/mashina/manifest.json` and report the source version, row count,

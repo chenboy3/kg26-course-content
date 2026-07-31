@@ -11,14 +11,14 @@ or a raw copy of the Mashina dataset.
 
 | Repository | Owns |
 |---|---|
-| [`chenboy3/kg26-project`](https://github.com/chenboy3/kg26-project) | Cafe simulation data, project releases, submissions, and private evaluation |
-| This repository | Shared lessons, OpenCode skills, dataset manifests, course profiles, and versioned bundles |
-| [`jonathanzhang99/inklab`](https://github.com/jonathanzhang99/inklab) | Hosted OpenCode accounts, worker machines, and course-profile installation |
+| [`chenboy3/kg26-project`](https://github.com/chenboy3/kg26-project) | Cafe simulation data, project releases, the standalone course service, submissions, leaderboard, and private evaluation |
+| This repository | Shared lessons, OpenCode skills, dataset manifests, student clients, and versioned bundles |
+| [`jonathanzhang99/inklab`](https://github.com/jonathanzhang99/inklab) | Generic hosted OpenCode accounts, worker machines, persistent workspaces, and model access |
 
-The current `kg26` profile installs the Day 1 lesson, the
-`/day-1-fetch-data` skill, and the `course-data` command. The three-lab
-prompt-first template is an author example; it is not yet installed by the
-live `kg26` profile.
+The current `kg26` manifest includes the Day 1 lesson, the
+`/day-1-fetch-data` and `/submit-business-plan` skills, the dataset command,
+and the course-service clients. The three-lab prompt-first template is an
+author example; it is not yet part of the live `kg26` manifest.
 
 ### First local check
 
@@ -40,19 +40,47 @@ Success means the tests finish with `OK`, `course-data list` shows `mashina`,
 and the bundle builder writes a `.tar.gz`, checksum, and manifest under
 `/tmp/kg26-course-bundle-test`.
 
+## Student workspace setup
+
+Inklab does not install this course or need a KG26 database migration. From the
+terminal in any persistent OpenCode workspace:
+
+```bash
+cd /data/workspace
+git clone https://github.com/chenboy3/kg26-course-content.git kg26-course
+cd kg26-course
+python3 -m pip install -r requirements.txt
+opencode
+```
+
+OpenCode discovers the checked-in `.opencode/skills` directory from this
+workspace. The dataset and submission commands stay under `bin/`, so they do
+not require system installation.
+
+Before the first submission, configure the URL supplied by the mentor and enter
+the team token at the hidden prompt:
+
+```bash
+bin/kg26-configure https://course.example
+```
+
+The command stores credentials in the gitignored `.kg26/config.json` with
+owner-only permissions. `/submit-business-plan` reviews the team's artifact and
+runs `bin/kg26-submit` only after the student confirms the file.
+
 ## Repository contract
 
-`course-profile.json` is the installation contract for Inklab. A course-profile
-installer should:
+`course-profile.json` is the versioned content manifest. Bundle builders and
+local checks use it to:
 
-1. install `requirements.txt` in the student runtime;
-2. expose `bin/course-data` as the `course-data` command;
-3. install the listed OpenCode skills into the student workspace;
-4. make the dataset manifest and lesson directories available read-only.
+1. identify `requirements.txt`;
+2. list student commands under `bin/`;
+3. list the OpenCode skills available in the workspace;
+4. include the dataset manifest and released lesson directories.
 
 The repository does not contain a raw copy of the Mashina dataset.
 
-## Build an Inklab course bundle
+## Build an immutable course bundle
 
 Build from a resolved commit so the artifact never includes uncommitted files:
 
@@ -71,7 +99,7 @@ command, skill, dataset manifest, and lesson before writing:
 - a release manifest with the source commit and profile version.
 
 After the bundle has a durable student-readable location, pass its HTTPS
-directory URL to produce the gateway catalog entry:
+directory URL to record the exact download location in the release metadata:
 
 ```bash
 bin/build-course-bundle \
@@ -80,10 +108,9 @@ bin/build-course-bundle \
   --base-url https://content.example/courses
 ```
 
-The resulting `.catalog.json` file is the value for Inklab's
-`COURSE_PROFILES_JSON`. Upload the matching bundle without renaming it, then
-configure the gateway with that catalog and the desired
-`DEFAULT_COURSE_PROFILE`.
+Upload the bundle, checksum, manifest, and catalog file without renaming them.
+They can be used for manual installation or archival verification. Inklab does
+not read this catalog.
 
 ## Mashina dataset
 
@@ -164,7 +191,8 @@ shasum -a 256 /tmp/kg26-bundle-a/*.tar.gz /tmp/kg26-bundle-b/*.tar.gz
   release contains `kg26` content version `2026.1` from merge commit
   `d68f4ea`.
 
-Before a student rehearsal, add the remaining daily lessons and skills, attach
-the written Mashina redistribution permission, and publish a new immutable
-bundle when the profile changes. Never replace an existing release artifact in
+The current candidate is content version `2026.2`. It adds self-service
+workspace setup and the submission client but is not published yet. Before a
+student rehearsal, attach the written Mashina redistribution permission and
+publish a new immutable bundle. Never replace the `2026.1` release artifact in
 place.

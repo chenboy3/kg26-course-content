@@ -143,7 +143,7 @@ class CourseDataTest(unittest.TestCase):
             ROOT / ".opencode/skills/day-1-fetch-data/SKILL.md"
         ).read_text()
 
-        self.assertIn("course-data fetch mashina", skill)
+        self.assertIn("bin/course-data fetch mashina", skill)
         self.assertNotIn("kg26-data", skill)
 
 

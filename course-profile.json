@@ -1,19 +1,31 @@
 {
   "schema_version": 1,
   "course_id": "kg26",
-  "content_version": "2026.1",
+  "content_version": "2026.2",
   "install": {
     "python_requirements": "requirements.txt",
     "commands": [
       {
         "name": "course-data",
         "path": "bin/course-data"
+      },
+      {
+        "name": "kg26-submit",
+        "path": "bin/kg26-submit"
+      },
+      {
+        "name": "kg26-configure",
+        "path": "bin/kg26-configure"
       }
     ],
     "skills": [
       {
         "name": "day-1-fetch-data",
         "path": ".opencode/skills/day-1-fetch-data"
+      },
+      {
+        "name": "submit-business-plan",
+        "path": ".opencode/skills/submit-business-plan"
       }
     ],
     "dataset_manifest": "datasets/datasets.json",

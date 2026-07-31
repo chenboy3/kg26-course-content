@@ -5,3 +5,4 @@ __pycache__/
 workspace/
 dist/
 graphify-out/
+.kg26/
